@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>48mm シールプレビュー</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: linear-gradient(135deg, #0f0f0f 0%, #1a1a2e 50%, #16213e 100%);
+      font-family: sans-serif;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    .info {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      color: white;
+      font-size: 14px;
+      text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+      background: rgba(0, 0, 0, 0.5);
+      padding: 10px 15px;
+      border-radius: 8px;
+      z-index: 1;
+    }
+
+    @media (max-width: 768px) {
+      .info {
+        bottom: 10px;
+        left: 10px;
+        right: 10px;
+        font-size: 12px;
+        padding: 8px 10px;
+        max-width: calc(100vw - 20px);
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="info">
+    <!-- <div>48mm シールプレビュー</div> -->
+    <div style="font-size: 12px; margin-top: 5px;">マウスドラッグ: 回転 | ホイール: ズーム</div>
+  </div>
+
+  <script id="vertexShader" type="x-shader/x-vertex">
+    varying vec2 vUv;
+    varying vec3 vNormal;
+    varying vec3 vWorldPosition;
+
+    void main() {
+      vUv = uv;
+      vNormal = normalize(normalMatrix * normal);
+      vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+      gl_Position = projectionMatrix * viewMatrix * vec4(vWorldPosition, 1.0);
+    }
+  </script>
+
+  <script id="fragmentShader" type="x-shader/x-fragment">
+    varying vec2 vUv;
+    varying vec3 vNormal;
+    uniform sampler2D colorMap;
+    uniform sampler2D monoMap;
+    uniform sampler2D patternMap;
+    uniform bool enableLighting;
+    uniform vec3 lightDirection;
+    uniform vec3 lightColor;
+    uniform float ambientStrength;
+    uniform bool enableHologram;
+
+    vec3 hsv2rgb(vec3 hsv) {
+      vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+      vec3 p = abs(fract(hsv.xxx + K.xyz) * 6.0 - K.www);
+      return hsv.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), hsv.y);
+    }
+
+    vec3 rgb2hsv(vec3 rgb) {
+      vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+      vec4 p = mix(vec4(rgb.bg, K.wz), vec4(rgb.gb, K.xy), step(rgb.b, rgb.g));
+      vec4 q = mix(vec4(p.xyw, rgb.r), vec4(rgb.r, p.yzx), step(p.x, rgb.r));
+
+      float d = q.x - min(q.w, q.y);
+      float e = 1.0e-10;
+      return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+    }
+
+    float getViewAngle() {
+      vec3 faceNormal = normalize(vNormal);
+      vec3 lightDir = normalize(vec3(0.0, -1.0, -1.0));
+      float angle = acos(dot(faceNormal, lightDir));
+      return angle;
+    }
+
+    vec3 generateAngleRGB(float strength) {
+      float pi = 3.141592653589793;
+      float angle = mod(getViewAngle() * strength, pi) / pi;
+      vec3 colorHSV = vec3(angle, 1.0, 1.0);
+      return hsv2rgb(colorHSV);
+    }
+
+    vec3 generateKiraRGB(vec3 colorNoiseRGB) {
+      vec3 angleColorRGB = generateAngleRGB(20.0);
+      float colorDiff = distance(colorNoiseRGB, angleColorRGB);
+      float brightness = max(1.0 - colorDiff, 0.0);
+
+      vec3 kiraNoiseHSV = rgb2hsv(colorNoiseRGB);
+      kiraNoiseHSV.z = brightness;
+      return hsv2rgb(kiraNoiseHSV);
+    }
+
+    void main() {
+      vec4 patternTexture = texture2D(patternMap, vUv);
+      float patternValue = (patternTexture.r + patternTexture.g + patternTexture.b) / 3.0;
+      
+      vec3 colorNoiseHSV = vec3(patternValue, 1.0, 1.0);
+      vec3 colorNoiseRGB = hsv2rgb(colorNoiseHSV);
+
+      vec3 kiraNoiseRGB = generateKiraRGB(colorNoiseRGB);
+      vec4 monoTexture = texture2D(monoMap, vUv);
+      kiraNoiseRGB = kiraNoiseRGB * monoTexture.rgb;
+
+      vec4 colorTexture = texture2D(colorMap, vUv);
+      vec3 finalColorRGB;
+      
+      if (enableHologram) {
+        vec3 hologramEffect = kiraNoiseRGB * 0.6 + colorNoiseRGB * 0.15;
+        finalColorRGB = colorTexture.rgb * (1.0 - monoTexture.r * 0.15) + hologramEffect * monoTexture.r * 0.5;
+      } else {
+        finalColorRGB = colorTexture.rgb;
+      }
+
+      if (enableLighting) {
+        vec3 normal = normalize(vNormal);
+        vec3 lightDir = normalize(lightDirection);
+        
+        float diffuse = max(dot(normal, lightDir), 0.0);
+        
+        vec3 ambient = ambientStrength * finalColorRGB;
+        vec3 diffuseColor = diffuse * lightColor * finalColorRGB;
+        
+        finalColorRGB = ambient + diffuseColor;
+      }
+
+      gl_FragColor = vec4(finalColorRGB, 1.0);
+    }
+  </script>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+
+  <script>
+    const PHYSICAL_SIZE_MM = 48;
+    const PHYSICAL_ASPECT_RATIO = 1.0;
+    const PHYSICAL_THICKNESS_MM = 0.1;
+    const THICKNESS_RATIO = PHYSICAL_THICKNESS_MM / PHYSICAL_SIZE_MM;
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.z = 5;
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    document.body.appendChild(renderer.domElement);
+
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.7);
+    directionalLight.position.set(0.0, 0.0, 1.0);
+    scene.add(directionalLight);
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+    scene.add(ambientLight);
+
+    function createCanvasTexture(size, drawFn) {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      drawFn(ctx, size);
+      return new THREE.CanvasTexture(canvas);
+    }
+
+    function createDefaultTexture() {
+      return createCanvasTexture(512, (ctx, size) => {
+        const gradient = ctx.createLinearGradient(0, 0, size, size);
+        gradient.addColorStop(0, '#ff6b6b');
+        gradient.addColorStop(0.5, '#ffd93d');
+        gradient.addColorStop(1, '#6bcf7f');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, size, size);
+
+        ctx.fillStyle = 'white';
+        ctx.font = 'bold 48px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('FRONT', size / 2, size / 2);
+      });
+    }
+
+    function createDefaultMaskTexture() {
+      return createCanvasTexture(512, (ctx, size) => {
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, size, size);
+      });
+    }
+
+    // Shaderと同じノイズ生成関数（Canvas版）
+    function generateRandomFloat(x, y) {
+      const value = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453123;
+      return value - Math.floor(value);
+    }
+
+    function generateValueNoise(x, y) {
+      const ix = Math.floor(x);
+      const iy = Math.floor(y);
+      const fx = x - ix;
+      const fy = y - iy;
+
+      const a = generateRandomFloat(ix, iy);
+      const b = generateRandomFloat(ix + 1.0, iy);
+      const c = generateRandomFloat(ix, iy + 1.0);
+      const d = generateRandomFloat(ix + 1.0, iy + 1.0);
+
+      const ux = fx * fx * (3.0 - 2.0 * fx);
+      const uy = fy * fy * (3.0 - 2.0 * fy);
+
+      return a * (1.0 - ux) * (1.0 - uy) +
+        b * ux * (1.0 - uy) +
+        c * (1.0 - ux) * uy +
+        d * ux * uy;
+    }
+
+    function createRadialPattern() {
+      const timestamp = Date.now();
+      const texture = new THREE.TextureLoader().load(`assets/prizm-pattern.png?t=${timestamp}`);
+      return texture;
+    }
+
+    function createNoisePattern(size = 512) {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      const imageData = ctx.createImageData(size, size);
+      const data = imageData.data;
+
+      for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+          // Shaderと同じスケール (vUv * 6.0)
+          const u = (x / size) * 6.0;
+          const v = (y / size) * 6.0;
+          const noise = generateValueNoise(u, v);
+          const value = Math.floor(noise * 255);
+
+          const idx = (y * size + x) * 4;
+          data[idx] = value;
+          data[idx + 1] = value;
+          data[idx + 2] = value;
+          data[idx + 3] = 255;
+        }
+      }
+
+      ctx.putImageData(imageData, 0, 0);
+      return new THREE.CanvasTexture(canvas);
+    }
+
+    function createDefaultPatternTexture() {
+      return createRadialPattern();
+    }
+
+    function createDefaultBackTexture() {
+      return createCanvasTexture(512, (ctx, size) => {
+        const gradient = ctx.createLinearGradient(0, 0, size, size);
+        gradient.addColorStop(0, '#4a90e2');
+        gradient.addColorStop(0.5, '#357abd');
+        gradient.addColorStop(1, '#2c5f9e');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, size, size);
+
+        ctx.fillStyle = 'white';
+        ctx.font = 'bold 48px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('BACK', size / 2, size / 2);
+      });
+    }
+
+    const vertexShader = document.getElementById('vertexShader').textContent;
+    const fragmentShader = document.getElementById('fragmentShader').textContent;
+
+    const material = new THREE.ShaderMaterial({
+      vertexShader: vertexShader,
+      fragmentShader: fragmentShader,
+      uniforms: {
+        colorMap: { value: createDefaultTexture() },
+        monoMap: { value: createDefaultMaskTexture() },
+        patternMap: { value: createDefaultPatternTexture() },
+        enableLighting: { value: true },
+        lightDirection: { value: new THREE.Vector3(0.0, 0.0, 1.0).normalize() },
+        lightColor: { value: new THREE.Vector3(1.0, 1.0, 1.0) },
+        ambientStrength: { value: 0.3 },
+        enableHologram: { value: true }
+      }
+    });
+
+    function calculateCardSize() {
+      const fov = 45;
+      const cameraZ = 5;
+
+      const vFov = (fov * Math.PI) / 180;
+      const visibleHeight = 2 * Math.tan(vFov / 2) * cameraZ;
+      const visibleWidth = visibleHeight * (window.innerWidth / window.innerHeight);
+      const targetSize = Math.min(visibleHeight, visibleWidth) * 0.7;
+
+      return targetSize;
+    }
+
+    const initialCardSize = calculateCardSize();
+    const cardThickness = initialCardSize * THICKNESS_RATIO;
+    const geometry = new THREE.BoxGeometry(initialCardSize, initialCardSize, cardThickness, 20, 20, 1);
+
+    const positions = geometry.attributes.position;
+    const bendStrength = 0.1;
+    const bendX = Math.random() > 0.5 ? 1 : -1;
+    const bendY = Math.random() > 0.5 ? 1 : -1;
+
+    for (let i = 0; i < positions.count; i++) {
+      const x = positions.getX(i);
+      const y = positions.getY(i);
+      const z = positions.getZ(i);
+
+      const nx = x / (initialCardSize / 2);
+      const ny = y / (initialCardSize / 2);
+      const bendAmount = (nx * nx * bendX + ny * ny * bendY) * bendStrength * (initialCardSize / 10);
+
+      positions.setZ(i, z + bendAmount);
+    }
+
+    geometry.attributes.position.needsUpdate = true;
+    geometry.computeVertexNormals();
+
+    const sideMaterial = new THREE.MeshLambertMaterial({
+      color: 0xcccccc,
+      emissive: 0x666666,
+      emissiveIntensity: 0.3
+    });
+
+    const backMaterial = new THREE.MeshLambertMaterial({
+      color: 0xffffff,
+      emissive: 0xffffff,
+      emissiveIntensity: 0.3,
+      map: createDefaultBackTexture(),
+      emissiveMap: createDefaultBackTexture()
+    });
+
+    const materials = [
+      sideMaterial.clone(),
+      sideMaterial.clone(),
+      sideMaterial.clone(),
+      sideMaterial.clone(),
+      material,
+      backMaterial
+    ];
+
+    const card = new THREE.Mesh(geometry, materials);
+
+    const cardGroup = new THREE.Group();
+    cardGroup.add(card);
+    scene.add(cardGroup);
+
+    const state = {
+      isDragging: false,
+      previousMousePosition: { x: 0, y: 0 },
+      targetRotation: { x: 0, y: 0 },
+      currentRotation: { x: 0, y: 0 },
+      autoRotate: true,
+      targetScale: 1.0,
+      currentScale: 1.0,
+      initialPinchDistance: 0,
+      initialScale: 1.0
+    };
+
+    const SCALE_MIN = 0.3;
+    const SCALE_MAX = 5.0;
+    const ROTATION_SPEED = 0.01;
+    const AUTO_ROTATE_SPEED = 0.002;
+    const LERP_FACTOR = 0.1;
+
+    function clampScale(scale) {
+      return Math.max(SCALE_MIN, Math.min(SCALE_MAX, scale));
+    }
+
+    function updateRotation(deltaX, deltaY) {
+      state.targetRotation.y += deltaX * ROTATION_SPEED;
+      state.targetRotation.x += deltaY * ROTATION_SPEED;
+    }
+
+    renderer.domElement.addEventListener('mousedown', (e) => {
+      state.isDragging = true;
+      state.previousMousePosition = { x: e.clientX, y: e.clientY };
+    });
+
+    renderer.domElement.addEventListener('mousemove', (e) => {
+      if (state.isDragging) {
+        const deltaX = e.clientX - state.previousMousePosition.x;
+        const deltaY = e.clientY - state.previousMousePosition.y;
+        updateRotation(deltaX, deltaY);
+        state.previousMousePosition = { x: e.clientX, y: e.clientY };
+      }
+    });
+
+    renderer.domElement.addEventListener('mouseup', () => {
+      state.isDragging = false;
+    });
+
+    renderer.domElement.addEventListener('mouseleave', () => {
+      state.isDragging = false;
+    });
+
+    renderer.domElement.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const delta = e.deltaY * -0.001;
+      state.targetScale = clampScale(state.targetScale + delta);
+    }, { passive: false });
+
+    renderer.domElement.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 1) {
+        state.isDragging = true;
+        state.previousMousePosition = {
+          x: e.touches[0].clientX,
+          y: e.touches[0].clientY
+        };
+      } else if (e.touches.length === 2) {
+        state.isDragging = false;
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        state.initialPinchDistance = Math.sqrt(dx * dx + dy * dy);
+        state.initialScale = state.currentScale;
+      }
+    });
+
+    renderer.domElement.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+
+      if (e.touches.length === 1 && state.isDragging) {
+        const deltaX = e.touches[0].clientX - state.previousMousePosition.x;
+        const deltaY = e.touches[0].clientY - state.previousMousePosition.y;
+        updateRotation(deltaX, deltaY);
+        state.previousMousePosition = {
+          x: e.touches[0].clientX,
+          y: e.touches[0].clientY
+        };
+      } else if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        const scale = (distance / state.initialPinchDistance) * state.initialScale;
+        state.targetScale = clampScale(scale);
+      }
+    }, { passive: false });
+
+    renderer.domElement.addEventListener('touchend', () => {
+      state.isDragging = false;
+    });
+
+    function loadTextureFromFile(file, callback) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const texture = new THREE.TextureLoader().load(e.target.result);
+        callback(texture);
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function loadImage(file, uniformName) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        if (uniformName === 'monoMap' && (file.type === 'image/png' || file.type === 'image/webp')) {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+
+            ctx.drawImage(img, 0, 0);
+
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imageData.data;
+
+            for (let i = 0; i < data.length; i += 4) {
+              const alpha = data[i + 3];
+              const maskValue = alpha > 0 ? 0 : 255;
+              data[i] = data[i + 1] = data[i + 2] = maskValue;
+              data[i + 3] = 255;
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+            material.uniforms[uniformName].value = new THREE.CanvasTexture(canvas);
+          };
+          img.src = e.target.result;
+        } else {
+          const texture = new THREE.TextureLoader().load(e.target.result);
+          material.uniforms[uniformName].value = texture;
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function updateBackTexture(texture) {
+      materials[5].map = texture;
+      materials[5].emissiveMap = texture;
+      materials[5].color.set(0xffffff);
+      materials[5].emissive.set(0xffffff);
+      materials[5].needsUpdate = true;
+    }
+
+    // GET引数の解析
+    const urlParams = new URLSearchParams(window.location.search);
+    const getParam = (name, defaultValue) => {
+      const val = urlParams.get(name);
+      if (val === null) return defaultValue;
+      if (val === 'true' || val === '1') return true;
+      if (val === 'false' || val === '0') return false;
+      return val;
+    };
+
+    const gui = new lil.GUI();
+    gui.title('設定');
+
+    const params = {
+      autoRotate: getParam('autoRotate', true),
+      lighting: getParam('lighting', true),
+      hologram: getParam('hologram', true),
+      patternType: getParam('pattern', '放射状'),
+      colorMapUrl: getParam('colorMap', null),
+      monoMapUrl: getParam('monoMap', null),
+      patternMapUrl: getParam('patternMap', null),
+      backMapUrl: getParam('backMap', null),
+      loadSample: () => {
+        const timestamp = Date.now();
+
+        material.uniforms.colorMap.value = new THREE.TextureLoader().load(
+          `assets/sticker-front.png?t=${timestamp}`
+        );
+
+        fetch(`assets/sticker-map.png?t=${timestamp}`)
+          .then(res => res.blob())
+          .then(blob => {
+            const file = new File([blob], 'sticker-map.png', { type: 'image/png' });
+            loadImage(file, 'monoMap');
+          });
+
+        material.uniforms.patternMap.value = new THREE.TextureLoader().load(
+          `assets/prizm-pattern.png?t=${timestamp}`
+        );
+
+        const backTexture = new THREE.TextureLoader().load(`assets/sticker-back.png?t=${timestamp}`);
+        updateBackTexture(backTexture);
+      },
+      downloadSample: () => {
+        const link = document.createElement('a');
+        link.href = 'assets/sample.zip';
+        link.download = 'sample.zip';
+        link.click();
+      }
+    };
+
+    // 初期状態の反映
+    state.autoRotate = params.autoRotate;
+    material.uniforms.enableLighting.value = params.lighting;
+    directionalLight.intensity = params.lighting ? 0.7 : 0;
+    ambientLight.intensity = params.lighting ? 0.3 : 0;
+    materials[5].emissiveIntensity = params.lighting ? 0.3 : 1.0;
+    material.uniforms.enableHologram.value = params.hologram;
+
+    if (params.patternType === 'ノイズ') {
+      material.uniforms.patternMap.value = createNoisePattern();
+    } else if (params.patternType === '放射状') {
+      material.uniforms.patternMap.value = createRadialPattern();
+    }
+
+    // URLからの画像読み込みヘルパー
+    function loadTextureFromUrl(url, callback, isMask = false) {
+      if (!url) return;
+      const loader = new THREE.TextureLoader();
+
+      if (isMask) {
+        // マスク画像の場合は一旦Imageとして読み込んで加工する
+        const img = new Image();
+        img.crossOrigin = 'anonymous'; // CORS対応
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const data = imageData.data;
+
+          for (let i = 0; i < data.length; i += 4) {
+            const alpha = data[i + 3];
+            const maskValue = alpha > 0 ? 0 : 255;
+            data[i] = data[i + 1] = data[i + 2] = maskValue;
+            data[i + 3] = 255;
+          }
+
+          ctx.putImageData(imageData, 0, 0);
+          callback(new THREE.CanvasTexture(canvas));
+        };
+        img.src = url;
+      } else {
+        loader.load(url, (texture) => {
+          callback(texture);
+        });
+      }
+    }
+
+    if (params.colorMapUrl) {
+      loadTextureFromUrl(params.colorMapUrl, (tex) => {
+        material.uniforms.colorMap.value = tex;
+      });
+    }
+    if (params.monoMapUrl) {
+      loadTextureFromUrl(params.monoMapUrl, (tex) => {
+        material.uniforms.monoMap.value = tex;
+      }, true);
+    }
+    if (params.patternMapUrl) {
+      loadTextureFromUrl(params.patternMapUrl, (tex) => {
+        material.uniforms.patternMap.value = tex;
+        params.patternType = 'カスタム';
+        gui.controllersRecursive().forEach(c => {
+          if (c.property === 'patternType') c.updateDisplay();
+        });
+      });
+    }
+    if (params.backMapUrl) {
+      loadTextureFromUrl(params.backMapUrl, (tex) => {
+        updateBackTexture(tex);
+      });
+    }
+
+    const controlsFolder = gui.addFolder('コントロール');
+    controlsFolder.add(params, 'autoRotate').name('自動回転').onChange(value => {
+      state.autoRotate = value;
+    });
+    controlsFolder.add(params, 'lighting').name('ライト').onChange(value => {
+      material.uniforms.enableLighting.value = value;
+      directionalLight.intensity = value ? 0.7 : 0;
+      ambientLight.intensity = value ? 0.3 : 0;
+      materials[5].emissiveIntensity = value ? 0.3 : 1.0;
+    });
+    controlsFolder.add(params, 'hologram').name('ホログラム').onChange(value => {
+      material.uniforms.enableHologram.value = value;
+    });
+    controlsFolder.add(params, 'patternType', ['放射状', 'ノイズ', 'カスタム']).name('パターン').onChange(value => {
+      if (value === 'ノイズ') {
+        material.uniforms.patternMap.value = createNoisePattern();
+      } else if (value === '放射状') {
+        material.uniforms.patternMap.value = createRadialPattern();
+      }
+    });
+    controlsFolder.open();
+
+    const sampleFolder = gui.addFolder('サンプル');
+    sampleFolder.add(params, 'loadSample').name('📦 sample読み込み');
+    sampleFolder.add(params, 'downloadSample').name('💾 sampleダウンロード');
+    sampleFolder.open();
+
+    const imageFolder = gui.addFolder('画像読み込み');
+
+    function createFileInput(label, callback) {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.style.display = 'none';
+      input.addEventListener('change', callback);
+      document.body.appendChild(input);
+      return input;
+    }
+
+    const colorInput = createFileInput('カラー画像', (e) => {
+      if (e.target.files[0]) {
+        loadImage(e.target.files[0], 'colorMap');
+      }
+    });
+
+    const monoInput = createFileInput('マスク画像', (e) => {
+      if (e.target.files[0]) {
+        loadImage(e.target.files[0], 'monoMap');
+      }
+    });
+
+    const patternInput = createFileInput('パターン画像', (e) => {
+      if (e.target.files[0]) {
+        loadImage(e.target.files[0], 'patternMap');
+        params.patternType = 'カスタム';
+        gui.controllersRecursive().forEach(c => {
+          if (c.property === 'patternType') c.updateDisplay();
+        });
+      }
+    });
+
+    const backInput = createFileInput('背面画像', (e) => {
+      if (e.target.files[0]) {
+        loadTextureFromFile(e.target.files[0], updateBackTexture);
+      }
+    });
+
+    imageFolder.add({ upload: () => colorInput.click() }, 'upload').name('🖼️ カラー画像');
+    imageFolder.add({ upload: () => monoInput.click() }, 'upload').name('🎭 マスク画像');
+    imageFolder.add({ upload: () => patternInput.click() }, 'upload').name('✨ パターン画像');
+    imageFolder.add({ upload: () => backInput.click() }, 'upload').name('🔙 背面画像');
+    imageFolder.open();
+
+    // GUIの表示制御
+    if (getParam('gui', true) === false) {
+      gui.hide();
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+
+      state.currentRotation.x += (state.targetRotation.x - state.currentRotation.x) * LERP_FACTOR;
+      state.currentRotation.y += (state.targetRotation.y - state.currentRotation.y) * LERP_FACTOR;
+
+      cardGroup.rotation.x = state.currentRotation.x;
+      cardGroup.rotation.y = state.currentRotation.y;
+
+      state.currentScale += (state.targetScale - state.currentScale) * LERP_FACTOR;
+      cardGroup.scale.set(state.currentScale, state.currentScale, state.currentScale);
+
+      if (!state.isDragging && state.autoRotate) {
+        state.targetRotation.y += AUTO_ROTATE_SPEED;
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    animate();
+  </script>
+</body>
+
+</html>
